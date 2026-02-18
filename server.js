@@ -9,6 +9,7 @@
  * POST /api/success   — parse success (job-assigned) email and return job info
  */
 
+import "dotenv/config";
 import express from "express";
 import { ALLOWED_ZIP_CODES, processWebhook } from "./api/webhook.js";
 import { processSuccess } from "./api/success.js";
