@@ -9,6 +9,8 @@ import { logError } from "./_errorLog.js";
 
 const ALLOWED_ZIP_CODES = ['60004', '60005', '60007', '60008', '60016', '60018', '60022', '60025', '60026', '60029', '60043', '60053', '60056', '60062', '60067', '60068', '60070', '60074', '60076', '60077', '60090', '60091', '60093', '60101', '60104', '60106', '60126', '60130', '60131', '60137', '60143', '60148', '60153', '60154', '60155', '60160', '60162', '60163', '60164', '60165', '60171', '60176', '60181', '60191', '60201', '60202', '60203', '60302', '60304', '60305', '60402', '60513', '60514', '60515', '60516', '60517', '60521', '60523', '60525', '60526', '60527', '60532', '60534', '60546', '60558', '60559', '60561', '60601', '60602', '60603', '60604', '60605', '60606', '60607', '60608', '60610', '60611', '60612', '60613', '60614', '60616', '60618', '60622', '60623', '60624', '60625', '60626', '60630', '60631', '60634', '60639', '60640', '60641', '60642', '60644', '60645', '60646', '60647', '60651', '60653', '60654', '60656', '60657', '60659', '60660', '60661', '60706', '60707', '60712', '60714', '60804'];
 
+const ACCEPT_JOB_BASE_URL = "https://login.theappliancerepairmen.com/job/accept";
+
 
 /**
  * Webhook business logic (used by Express routes in server.js).
@@ -76,13 +78,13 @@ export async function processWebhook(body) {
 
   try {
     const acceptResult = await visitAcceptLink(acceptUrl);
-    const finalOutcome = acceptResult.step2?.outcome || acceptResult.step1?.outcome || "unknown";
+    const finalOutcome = acceptResult.outcome || "unknown";
     console.log(`========== DONE — Final outcome: ${finalOutcome} ==========`);
 
     return {
       statusCode: 200,
       data: {
-        status: "accepted",
+        status: finalOutcome === "accepted" ? "accepted" : "completed",
         subject,
         zipCode,
         appliances,
@@ -112,227 +114,124 @@ const BROWSER_HEADERS = {
 };
 
 /**
- * Step 1 — Visit the accept link from the email.
- * Step 2 — On the confirmation page, find the first "accept" button and press it.
- * Returns a summary of both page loads and the final outcome.
+ * Visit the accept link. No further action is required — the page will show
+ * "Job accepted!" or an error. We analyse the response and log any non-success as an incident.
  */
 async function visitAcceptLink(url) {
   try {
-    console.log(`Step 1 — Fetching accept URL: ${url}`);
+    console.log(`Visiting accept URL: ${url}`);
 
-    const firstResponse = await axios.get(url, {
+    const response = await axios.get(url, {
       maxRedirects: 5,
       timeout: 15000,
       headers: BROWSER_HEADERS,
     });
 
-    const firstPageUrl = firstResponse.request?.res?.responseUrl || url;
-    const $ = cheerio.load(firstResponse.data);
-    const firstPageTitle = $("title").text().trim();
-
-    console.log(`Step 1 — HTTP ${firstResponse.status}, page title: "${firstPageTitle}"`);
-    console.log(`Step 1 — Final URL after redirects: ${firstPageUrl}`);
-    console.log(`Step 1 — Response body length: ${firstResponse.data.length} chars`);
-
-    console.log("---------- LOOKING FOR CONFIRM BUTTON ----------");
-    const confirmResult = await pressAcceptButton($, firstPageUrl, firstResponse);
-
-    return {
-      step1: {
-        httpStatus: firstResponse.status,
-        url: firstPageUrl,
-        pageTitle: firstPageTitle,
-      },
-      step2: confirmResult,
-    };
-  } catch (error) {
-    const status = error.response?.status || null;
-    const statusText = error.response?.statusText || error.message;
-    console.error(`Step 1 — FAILED: HTTP ${status} — ${statusText}`);
-
-    return {
-      step1: { httpStatus: status, outcome: "error", error: statusText },
-      step2: null,
-    };
-  }
-}
-
-/**
- * Find the first "accept" button on the page and submit it.
- * Handles three patterns:
- *   1. <a> link containing "accept"
- *   2. <button> inside a <form> containing "accept"
- *   3. <input type="submit"> with value containing "accept"
- */
-async function pressAcceptButton($, pageUrl, previousResponse) {
-  const allLinks = [];
-  $("a").each((_i, el) => {
-    allLinks.push({ text: $(el).text().trim(), href: $(el).attr("href") || "" });
-  });
-  console.log(`Step 2 — Found ${allLinks.length} <a> tags on the page`);
-
-  // --- Pattern 1: <a> tag with "accept" text ---
-  let confirmUrl = null;
-  for (const link of allLinks) {
-    if (/accept/i.test(link.text)) {
-      confirmUrl = link.href;
-      console.log(`Step 2 — Matched <a> link: text="${link.text}", href="${link.href}"`);
-      break;
-    }
-  }
-
-  if (confirmUrl) {
-    const resolved = new URL(confirmUrl, pageUrl).href;
-    console.log(`Step 2 — Following accept link (GET): ${resolved}`);
-    return await fetchAndAnalyse(resolved, "GET");
-  }
-
-  console.log("Step 2 — No <a> accept link found, checking buttons/forms...");
-
-  // --- Pattern 2: <button> inside a <form> ---
-  let formAction = null;
-  let formMethod = "POST";
-  let formData = {};
-
-  const allButtons = [];
-  $("button, input[type='submit']").each((_i, el) => {
-    const tag = el.tagName.toLowerCase();
-    const text = tag === "button" ? $(el).text().trim() : $(el).attr("value") || "";
-    allButtons.push({ tag, text });
-
-    if (/accept/i.test(text)) {
-      console.log(`Step 2 — Matched <${tag}>: text="${text}"`);
-      const form = $(el).closest("form");
-      if (form.length) {
-        formAction = form.attr("action") || pageUrl;
-        formMethod = (form.attr("method") || "POST").toUpperCase();
-        console.log(`Step 2 — Parent form: action="${formAction}", method="${formMethod}"`);
-
-        form.find("input, select, textarea").each((_j, field) => {
-          const name = $(field).attr("name");
-          if (!name) return;
-          const type = ($(field).attr("type") || "").toLowerCase();
-          if (type === "submit" || type === "button") return;
-          formData[name] = $(field).val() || "";
-        });
-        console.log(`Step 2 — Collected ${Object.keys(formData).length} form fields: [${Object.keys(formData).join(", ")}]`);
-      } else {
-        console.log("Step 2 — Button is not inside a <form> — cannot submit.");
-      }
-      return false;
-    }
-  });
-
-  console.log(`Step 2 — Found ${allButtons.length} buttons total: [${allButtons.map((b) => `${b.tag}:"${b.text}"`).join(", ")}]`);
-
-  if (formAction) {
-    const resolved = new URL(formAction, pageUrl).href;
-    console.log(`Step 2 — Submitting form ${formMethod} ${resolved}`);
-    return await fetchAndAnalyse(resolved, formMethod, formData, previousResponse);
-  }
-
-  console.log("Step 2 — NO ACCEPT BUTTON FOUND on confirmation page.");
-  console.log("Step 2 — Saving raw HTML to MongoDB error log...");
-
-  const rawHtml = $.html();
-  const pageTitle = $("title").text().trim();
-  const errorId = await logError({
-    url: pageUrl,
-    pageTitle,
-    rawHtml,
-    reason: "No accept button found on confirmation page",
-  });
-
-  console.log(`Step 2 — Error log saved with id: ${errorId}`);
-  console.log(`Step 2 — View it at: GET /api/logs?id=${errorId}&raw=1`);
-
-  return {
-    outcome: "no_confirm_button",
-    errorLogId: errorId,
-    bodyPreview: $("body").text().replace(/\s+/g, " ").trim().slice(0, 500),
-  };
-}
-
-/**
- * Fetch a URL (GET or POST) and analyse the resulting page for outcome.
- */
-async function fetchAndAnalyse(url, method, formData = {}, previousResponse = null) {
-  try {
-    const cookies = previousResponse?.headers?.["set-cookie"]
-      ?.map((c) => c.split(";")[0])
-      .join("; ") || "";
-
-    console.log(`Step 2 — Sending ${method} to: ${url}`);
-    if (cookies) console.log(`Step 2 — Forwarding cookies: ${cookies}`);
-    if (method === "POST") console.log(`Step 2 — POST data keys: [${Object.keys(formData).join(", ")}]`);
-
-    const config = {
-      method,
-      url,
-      maxRedirects: 5,
-      timeout: 15000,
-      headers: {
-        ...BROWSER_HEADERS,
-        ...(cookies && { Cookie: cookies }),
-        ...(method === "POST" && {
-          "Content-Type": "application/x-www-form-urlencoded",
-        }),
-      },
-      ...(method === "POST" && {
-        data: new URLSearchParams(formData).toString(),
-      }),
-    };
-
-    const response = await axios(config);
-    const finalUrl = response.request?.res?.responseUrl || url;
+    const pageUrl = response.request?.res?.responseUrl || url;
     const $ = cheerio.load(response.data);
-
     const pageTitle = $("title").text().trim();
-    const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 500);
+    const bodyText = $("body").text().replace(/\s+/g, " ").trim();
+    const bodyPreview = bodyText.slice(0, 500);
 
-    console.log(`Step 2 — Response: HTTP ${response.status}, title: "${pageTitle}"`);
-    console.log(`Step 2 — Final URL after redirects: ${finalUrl}`);
-    console.log(`Step 2 — Body preview: ${bodyText.slice(0, 200)}...`);
+    console.log(`Response: HTTP ${response.status}, title: "${pageTitle}"`);
+    console.log(`Final URL: ${pageUrl}`);
+    console.log(`Body preview: ${bodyPreview.slice(0, 200)}...`);
 
     const lowerText = bodyText.toLowerCase();
-    const accepted =
-      lowerText.includes("success") ||
-      lowerText.includes("confirmed") ||
-      lowerText.includes("accepted");
+    const isJobAccepted = /job\s+accepted\s*!?/i.test(bodyText);
     const alreadyTaken =
       lowerText.includes("already") ||
       lowerText.includes("taken") ||
       lowerText.includes("expired");
 
     let outcome = "unknown";
-    if (accepted && !alreadyTaken) outcome = "accepted";
-    else if (alreadyTaken) outcome = "already_taken";
+    if (isJobAccepted && !alreadyTaken) {
+      outcome = "accepted";
+      console.log(`Outcome: accepted ("Job accepted!" found)`);
+    } else if (alreadyTaken) {
+      outcome = "already_taken";
+      console.log(`Outcome: already_taken`);
+    } else {
+      outcome = "error";
+      console.log(`Outcome: error or unexpected page (no "Job accepted!" found)`);
+    }
 
-    console.log(`Step 2 — Outcome analysis: accepted=${accepted}, alreadyTaken=${alreadyTaken} => "${outcome}"`);
+    // Log all non-success incidents so we have a record
+    if (outcome !== "accepted") {
+      const reason =
+        outcome === "already_taken"
+          ? "Job already taken or expired"
+          : `Unexpected response: ${bodyPreview.slice(0, 200)}`;
+      const errorId = await logError({
+        url: pageUrl,
+        pageTitle,
+        rawHtml: $.html(),
+        reason,
+      });
+      console.log(`Incident logged — id: ${errorId}, view: GET /api/logs?id=${errorId}&raw=1`);
+      return {
+        httpStatus: response.status,
+        url: pageUrl,
+        pageTitle,
+        outcome,
+        bodyPreview,
+        errorLogId: errorId,
+      };
+    }
 
     return {
       httpStatus: response.status,
-      finalUrl,
+      url: pageUrl,
       pageTitle,
-      outcome,
-      bodyPreview: bodyText,
+      outcome: "accepted",
+      bodyPreview,
     };
   } catch (error) {
     const status = error.response?.status || null;
     const statusText = error.response?.statusText || error.message;
-    console.error(`Step 2 — FAILED: HTTP ${status} — ${statusText}`);
+    console.error(`Accept URL failed: HTTP ${status} — ${statusText}`);
+
+    // Log HTTP/network errors as incidents
+    const errorId = await logError({
+      url,
+      pageTitle: "",
+      rawHtml: "",
+      reason: `Request failed: ${status || "network"} — ${statusText}`,
+    });
+    console.log(`Incident logged — id: ${errorId}`);
 
     return {
       httpStatus: status,
       outcome: "error",
       error: statusText,
+      errorLogId: errorId,
     };
   }
 }
 
 /**
+ * Extract the token (value starting with "ey") from an accept/decline URL.
+ * The token is typically the last path segment. Returns null if not found.
+ */
+function extractTokenFromHref(href) {
+  if (!href || typeof href !== "string") return null;
+  const trimmed = href.trim();
+  // Match path segment that starts with "ey" (JWT-style), until next / or ? or # or end
+  const match = trimmed.match(/\/(ey[^/?#]+)(?:[/?#]|$)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Build the canonical accept URL from a token.
+ */
+function buildAcceptUrl(token) {
+  if (!token || !token.startsWith("ey")) return null;
+  return `${ACCEPT_JOB_BASE_URL}/${token}`;
+}
+
+/**
  * Parse the email HTML and extract:
- *  - acceptUrl:   href from the "Accept Job" button
+ *  - acceptUrl:   built from token (ey...) found in Accept or Decline button href
  *  - zipCode:     5-digit zip from the Address line
  *  - appliances:  list of appliance names from each service entry
  */
@@ -343,15 +242,30 @@ function parseEmailHtml(html) {
   let acceptUrl = null;
   let zipCode = null;
   const appliances = [];
+  let acceptHref = null;
+  let declineHref = null;
 
   $("a").each((_i, el) => {
     const text = $(el).text().trim();
+    const href = $(el).attr("href") || "";
     if (/accept/i.test(text)) {
-      acceptUrl = $(el).attr("href");
-      console.log(`Parse — Found accept link: "${text}" -> ${acceptUrl}`);
-      return false;
+      acceptHref = href;
+      console.log(`Parse — Found accept link: "${text}" -> ${acceptHref}`);
+    } else if (/decline/i.test(text)) {
+      declineHref = href;
+      console.log(`Parse — Found decline link: "${text}" -> ${declineHref}`);
     }
   });
+
+  // Prefer token from accept link, then decline link; build canonical accept URL
+  const token = extractTokenFromHref(acceptHref) || extractTokenFromHref(declineHref);
+  if (token) {
+    acceptUrl = buildAcceptUrl(token);
+    console.log(`Parse — Token extracted: "${token.slice(0, 20)}...", acceptUrl: ${acceptUrl}`);
+  } else if (acceptHref) {
+    acceptUrl = acceptHref;
+    console.log(`Parse — No token found in accept/decline hrefs, using raw accept href`);
+  }
 
   $("li").each((_i, el) => {
     const text = $(el).text().trim();
