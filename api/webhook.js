@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
 import axios from "axios";
-import { logError } from "./_errorLog.js";
+import { logError, logSuccess } from "./_errorLog.js";
 
 /**
  * Allowed zip codes — only jobs in these areas will be auto-accepted.
@@ -40,9 +40,9 @@ export async function processWebhook(body) {
   }
 
   console.log("Parsing email HTML...");
-  const { acceptUrl, zipCode, appliances } = parseEmailHtml(html);
+  const { acceptUrl, zipCode, jobAddress, appliances } = parseEmailHtml(html);
 
-  console.log(`Parsed — zipCode: ${zipCode}, appliances: [${appliances.join(", ")}]`);
+  console.log(`Parsed — zipCode: ${zipCode}, jobAddress: ${jobAddress || "(none)"}, appliances: [${appliances.join(", ")}]`);
   console.log(`Parsed — acceptUrl: ${acceptUrl || "(not found)"}`);
 
   if (!acceptUrl) {
@@ -77,7 +77,7 @@ export async function processWebhook(body) {
   console.log("---------- VISITING ACCEPT URL ----------");
 
   try {
-    const acceptResult = await visitAcceptLink(acceptUrl);
+    const acceptResult = await visitAcceptLink(acceptUrl, { jobAddress });
     const finalOutcome = acceptResult.outcome || "unknown";
     console.log(`========== DONE — Final outcome: ${finalOutcome} ==========`);
 
@@ -87,6 +87,7 @@ export async function processWebhook(body) {
         status: finalOutcome === "accepted" ? "accepted" : "completed",
         subject,
         zipCode,
+        jobAddress,
         appliances,
         acceptUrl,
         acceptResult,
@@ -116,8 +117,9 @@ const BROWSER_HEADERS = {
 /**
  * Visit the accept link. No further action is required — the page will show
  * "Job accepted!" or an error. We analyse the response and log any non-success as an incident.
+ * Successes are logged too. jobAddress is included in all log entries.
  */
-async function visitAcceptLink(url) {
+async function visitAcceptLink(url, { jobAddress } = {}) {
   try {
     console.log(`Visiting accept URL: ${url}`);
 
@@ -167,6 +169,7 @@ async function visitAcceptLink(url) {
         pageTitle,
         rawHtml: $.html(),
         reason,
+        jobAddress,
       });
       console.log(`Incident logged — id: ${errorId}, view: GET /api/logs?id=${errorId}&raw=1`);
       return {
@@ -179,12 +182,22 @@ async function visitAcceptLink(url) {
       };
     }
 
+    // Log success
+    const successId = await logSuccess({
+      url: pageUrl,
+      pageTitle,
+      bodyPreview,
+      jobAddress,
+    });
+    console.log(`Success logged — id: ${successId}`);
+
     return {
       httpStatus: response.status,
       url: pageUrl,
       pageTitle,
       outcome: "accepted",
       bodyPreview,
+      successLogId: successId,
     };
   } catch (error) {
     const status = error.response?.status || null;
@@ -197,6 +210,7 @@ async function visitAcceptLink(url) {
       pageTitle: "",
       rawHtml: "",
       reason: `Request failed: ${status || "network"} — ${statusText}`,
+      jobAddress,
     });
     console.log(`Incident logged — id: ${errorId}`);
 
@@ -233,6 +247,7 @@ function buildAcceptUrl(token) {
  * Parse the email HTML and extract:
  *  - acceptUrl:   built from token (ey...) found in Accept or Decline button href
  *  - zipCode:     5-digit zip from the Address line
+ *  - jobAddress:  full address from the Address line (e.g. "1611 lacey ave, Lisle, Illinois 60532")
  *  - appliances:  list of appliance names from each service entry
  */
 function parseEmailHtml(html) {
@@ -241,6 +256,7 @@ function parseEmailHtml(html) {
 
   let acceptUrl = null;
   let zipCode = null;
+  let jobAddress = null;
   const appliances = [];
   let acceptHref = null;
   let declineHref = null;
@@ -272,6 +288,8 @@ function parseEmailHtml(html) {
 
     if (/^Address:/i.test(text)) {
       console.log(`Parse — Address line: "${text}"`);
+      jobAddress = text.replace(/^Address:\s*/i, "").trim() || null;
+      if (jobAddress) console.log(`Parse — Job address: ${jobAddress}`);
       const zipMatch = text.match(/\b(\d{5})\b/);
       if (zipMatch) {
         zipCode = zipMatch[1];
@@ -290,8 +308,9 @@ function parseEmailHtml(html) {
 
   if (!acceptUrl) console.log("Parse — No accept link found in email.");
   if (!zipCode) console.log("Parse — No zip code found in email.");
+  if (!jobAddress) console.log("Parse — No job address found in email.");
   if (appliances.length === 0) console.log("Parse — No appliances found in email.");
 
-  console.log(`Parse — Summary: zip=${zipCode}, appliances=[${appliances.join(", ")}], hasAcceptUrl=${!!acceptUrl}`);
-  return { acceptUrl, zipCode, appliances };
+  console.log(`Parse — Summary: zip=${zipCode}, jobAddress=${jobAddress || "(none)"}, appliances=[${appliances.join(", ")}], hasAcceptUrl=${!!acceptUrl}`);
+  return { acceptUrl, zipCode, jobAddress, appliances };
 }

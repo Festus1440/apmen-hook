@@ -17,18 +17,38 @@ export async function getErrorLogs() {
 }
 
 /**
- * Append a new error log entry with the raw HTML of a page
- * where no accept button could be found.
+ * Append a new error/failure log entry. jobAddress is included when available.
  * Returns the inserted document's _id as a string.
  */
-export async function logError({ url, pageTitle, rawHtml, reason }) {
+export async function logError({ url, pageTitle, rawHtml, reason, jobAddress }) {
   const db = await getDb();
   const doc = {
     timestamp: new Date().toISOString(),
+    type: "error",
+    jobAddress: jobAddress || null,
     url,
     pageTitle,
     reason,
     rawHtml,
+  };
+
+  const result = await db.collection(COLLECTION).insertOne(doc);
+  return result.insertedId.toString();
+}
+
+/**
+ * Append a success log entry (job accepted). jobAddress is included when available.
+ * Returns the inserted document's _id as a string.
+ */
+export async function logSuccess({ url, pageTitle, bodyPreview, jobAddress }) {
+  const db = await getDb();
+  const doc = {
+    timestamp: new Date().toISOString(),
+    type: "success",
+    jobAddress: jobAddress || null,
+    url,
+    pageTitle,
+    bodyPreview: bodyPreview || null,
   };
 
   const result = await db.collection(COLLECTION).insertOne(doc);

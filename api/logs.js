@@ -24,15 +24,20 @@ export default async function handler(req, res) {
       if (!entry) return res.status(404).json({ error: `Log "${id}" not found` });
       return res.status(200).json({
         id: entry._id.toString(),
+        type: entry.type || "error",
+        jobAddress: entry.jobAddress,
         timestamp: entry.timestamp,
         url: entry.url,
         pageTitle: entry.pageTitle,
         reason: entry.reason,
+        bodyPreview: entry.bodyPreview,
         rawHtml: entry.rawHtml,
       });
     }
     const logs = (await getErrorLogs()).map(({ _id, rawHtml, ...rest }) => ({
       id: _id.toString(),
+      type: rest.type || "error",
+      jobAddress: rest.jobAddress,
       ...rest,
       htmlLength: rawHtml?.length || 0,
     }));
@@ -45,6 +50,10 @@ export default async function handler(req, res) {
     if (!entry) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       return res.status(404).send("<h1>Log entry not found</h1>");
+    }
+    if (!entry.rawHtml) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      return res.status(200).send(`<p>No raw HTML for this log (success entries do not store page HTML).</p><p><a href="/api/logs?id=${id}">Back to log</a></p>`);
     }
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.status(200).send(entry.rawHtml);
@@ -92,6 +101,7 @@ function page(title, body) {
       font-size: 0.75rem; font-weight: 600;
     }
     .badge-error { background: #da3633; color: #fff; }
+    .badge-success { background: #238636; color: #fff; }
     .badge-count { background: #30363d; color: #8b949e; }
     .card {
       background: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -135,32 +145,36 @@ function page(title, body) {
 
 function listPage(logs) {
   if (logs.length === 0) {
-    return page("Error Logs", `
+    return page("Job Logs", `
       <div class="top-bar">
-        <h1>Error Logs</h1>
+        <h1>Job Logs</h1>
         <span class="badge badge-count">0 entries</span>
       </div>
       <div class="empty">
-        <p>No error logs yet.</p>
-        <p>Errors are captured when a confirmation page has no accept button.</p>
+        <p>No job logs yet.</p>
+        <p>Successes and failures (with job address) are logged when the webhook processes job-offer emails.</p>
       </div>
     `);
   }
 
   const cards = logs.map((entry) => {
     const id = entry._id.toString();
+    const type = entry.type || "error";
     const time = new Date(entry.timestamp).toLocaleString("en-US", {
       dateStyle: "medium", timeStyle: "short",
     });
     const htmlLen = entry.rawHtml?.length || 0;
+    const title = type === "success" ? "Job accepted" : (entry.reason || "Unknown error");
+    const badgeClass = type === "success" ? "badge-success" : "badge-error";
     return `
       <a href="/api/logs?id=${id}" style="text-decoration:none;color:inherit;">
         <div class="card">
-          <div class="card-title">${esc(entry.reason || "Unknown error")}</div>
+          <div class="card-title"><span class="badge ${badgeClass}">${type === "success" ? "Success" : "Error"}</span> ${esc(title)}</div>
           <div class="card-meta">
             <span>${time}</span>
+            ${entry.jobAddress ? `<span>${esc(truncate(entry.jobAddress, 50))}</span>` : ""}
             <span>${esc(entry.pageTitle || "No title")}</span>
-            <span>${(htmlLen / 1024).toFixed(1)} KB</span>
+            ${htmlLen ? `<span>${(htmlLen / 1024).toFixed(1)} KB</span>` : ""}
           </div>
           <div class="card-meta" style="margin-top:4px;">
             <span>${esc(truncate(entry.url || "", 80))}</span>
@@ -169,9 +183,9 @@ function listPage(logs) {
       </a>`;
   }).join("");
 
-  return page("Error Logs", `
+  return page("Job Logs", `
     <div class="top-bar">
-      <h1>Error Logs</h1>
+      <h1>Job Logs</h1>
       <span class="badge badge-count">${logs.length} ${logs.length === 1 ? "entry" : "entries"}</span>
     </div>
     ${cards}
@@ -180,46 +194,64 @@ function listPage(logs) {
 
 function detailPage(entry) {
   const id = entry._id.toString();
+  const type = entry.type || "error";
   const time = new Date(entry.timestamp).toLocaleString("en-US", {
     dateStyle: "full", timeStyle: "medium",
   });
   const htmlLen = entry.rawHtml?.length || 0;
+  const title = type === "success" ? "Job accepted" : (entry.reason || "Unknown error");
+  const badgeClass = type === "success" ? "badge-success" : "badge-error";
 
   return page(`Log ${id}`, `
     <div class="detail-header">
       <a href="/api/logs">&larr; Back to list</a>
     </div>
     <h1>
-      <span class="badge badge-error">Error</span>
-      ${esc(entry.reason || "Unknown error")}
+      <span class="badge ${badgeClass}">${type === "success" ? "Success" : "Error"}</span>
+      ${esc(title)}
     </h1>
 
     <div class="detail-row">
       <div class="detail-label">Timestamp</div>
       <div class="detail-value">${time}</div>
     </div>
+    ${entry.jobAddress ? `
+    <div class="detail-row">
+      <div class="detail-label">Job Address</div>
+      <div class="detail-value">${esc(entry.jobAddress)}</div>
+    </div>
+    ` : ""}
     <div class="detail-row">
       <div class="detail-label">Page Title</div>
       <div class="detail-value">${esc(entry.pageTitle || "(none)")}</div>
     </div>
     <div class="detail-row">
       <div class="detail-label">URL</div>
-      <div class="detail-value"><a href="${esc(entry.url)}" target="_blank" rel="noopener">${esc(entry.url)}</a></div>
+      <div class="detail-value"><a href="${esc(entry.url || "#")}" target="_blank" rel="noopener">${esc(entry.url || "(none)")}</a></div>
     </div>
+    ${entry.bodyPreview ? `
+    <div class="detail-row">
+      <div class="detail-label">Body Preview</div>
+      <div class="detail-value">${esc(entry.bodyPreview.slice(0, 500))}</div>
+    </div>
+    ` : ""}
+    ${htmlLen ? `
     <div class="detail-row">
       <div class="detail-label">Raw HTML Size</div>
       <div class="detail-value">${(htmlLen / 1024).toFixed(1)} KB (${htmlLen.toLocaleString()} chars)</div>
     </div>
+    ` : ""}
 
     <div style="margin-top:20px;">
-      <a class="btn btn-primary" href="/api/logs?id=${id}&raw=1" target="_blank">Open Raw HTML</a>
+      ${htmlLen ? `<a class="btn btn-primary" href="/api/logs?id=${id}&raw=1" target="_blank">Open Raw HTML</a>` : ""}
       <a class="btn" href="/api/logs?id=${id}&json=1" target="_blank">View JSON</a>
     </div>
-
+    ${htmlLen ? `
     <div class="detail-row" style="margin-top:20px;">
       <div class="detail-label">HTML Preview</div>
       <iframe src="/api/logs?id=${id}&raw=1" sandbox="allow-same-origin"></iframe>
     </div>
+    ` : ""}
   `);
 }
 
