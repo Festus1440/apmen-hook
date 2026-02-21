@@ -161,7 +161,9 @@ function listPage(logs) {
     const id = entry._id.toString();
     const type = entry.type || "error";
     const time = new Date(entry.timestamp).toLocaleString("en-US", {
-      dateStyle: "medium", timeStyle: "short",
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "America/Chicago",
     });
     const htmlLen = entry.rawHtml?.length || 0;
     const title = type === "success" ? "Job accepted" : (entry.reason || "Unknown error");
@@ -196,7 +198,9 @@ function detailPage(entry) {
   const id = entry._id.toString();
   const type = entry.type || "error";
   const time = new Date(entry.timestamp).toLocaleString("en-US", {
-    dateStyle: "full", timeStyle: "medium",
+    dateStyle: "full",
+    timeStyle: "medium",
+    timeZone: "America/Chicago",
   });
   const htmlLen = entry.rawHtml?.length || 0;
   const title = type === "success" ? "Job accepted" : (entry.reason || "Unknown error");
