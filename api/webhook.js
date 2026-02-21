@@ -25,22 +25,26 @@ export { ALLOWED_ZIP_CODES };
 export async function processWebhook(body) {
   const subject = body?.subject || body?.Subject || "";
   const html = body?.html || body?.HtmlBody || "";
+  const text = body?.text || body?.TextBody || body?.plainText || "";
 
   console.log("========== WEBHOOK RECEIVED ==========");
   console.log(`Timestamp: ${new Date().toISOString()}`);
   console.log(`Subject: ${subject}`);
-  console.log(`HTML body length: ${html.length} chars`);
+  console.log(`HTML length: ${html.length} chars, text length: ${text.length} chars`);
 
-  if (!html) {
-    console.log("RESULT: No HTML body — aborting.");
+  const hasHtml = html && html.length > 0;
+  const hasText = text && text.length > 0;
+  if (!hasHtml && !hasText) {
+    console.log("RESULT: No HTML or text body — aborting.");
     return {
       statusCode: 400,
-      data: { status: "error", message: "No HTML body found in the payload" },
+      data: { status: "error", message: "No HTML or text body found in the payload" },
     };
   }
 
-  console.log("Parsing email HTML...");
-  const { acceptUrl, zipCode, jobAddress, appliances } = parseEmailHtml(html);
+  const { acceptUrl, zipCode, jobAddress, appliances } = hasHtml
+    ? parseEmailHtml(html)
+    : parseEmailText(text);
 
   console.log(`Parsed — zipCode: ${zipCode}, jobAddress: ${jobAddress || "(none)"}, appliances: [${appliances.join(", ")}]`);
   console.log(`Parsed — acceptUrl: ${acceptUrl || "(not found)"}`);
@@ -241,6 +245,61 @@ function extractTokenFromHref(href) {
 function buildAcceptUrl(token) {
   if (!token || !token.startsWith("ey")) return null;
   return `${ACCEPT_JOB_BASE_URL}/${token}`;
+}
+
+/**
+ * Parse plain-text job email (e.g. from IMAP body.text).
+ * Extracts: acceptUrl (from URLs containing /job/accept/ or token), zipCode, jobAddress, appliances.
+ */
+function parseEmailText(rawText) {
+  console.log("---------- PARSING EMAIL TEXT ----------");
+  const text = typeof rawText === "string" ? rawText : "";
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
+
+  let acceptUrl = null;
+  let zipCode = null;
+  let jobAddress = null;
+  const appliances = [];
+
+  // Find accept/decline URLs anywhere in body (they may be on one line with space between)
+  const acceptUrlMatch = text.match(/https?:\/\/[^\s]+?\/job\/accept\/[^\s]+/i);
+  const declineUrlMatch = text.match(/https?:\/\/[^\s]+?\/job\/decline\/[^\s]+/i);
+  const acceptHref = acceptUrlMatch ? acceptUrlMatch[0].trim() : null;
+  const declineHref = declineUrlMatch ? declineUrlMatch[0].trim() : null;
+  const token = extractTokenFromHref(acceptHref) || extractTokenFromHref(declineHref);
+  if (token) {
+    acceptUrl = buildAcceptUrl(token);
+    console.log(`Parse — Token from text URL: "${token.slice(0, 20)}...", acceptUrl: ${acceptUrl}`);
+  } else if (acceptHref) {
+    acceptUrl = acceptHref;
+    console.log(`Parse — Using raw accept URL from text`);
+  }
+
+  for (const line of lines) {
+    if (/^Address:\s*/i.test(line)) {
+      jobAddress = line.replace(/^Address:\s*/i, "").trim() || null;
+      if (jobAddress) console.log(`Parse — Job address: ${jobAddress}`);
+      const zipMatch = line.match(/\b(\d{5})\b/);
+      if (zipMatch) {
+        zipCode = zipMatch[1];
+        console.log(`Parse — Extracted zip code: ${zipCode}`);
+      }
+    }
+    if (/^Appliance:\s*/i.test(line)) {
+      const value = line.replace(/^Appliance:\s*/i, "").trim();
+      if (value) {
+        appliances.push(value);
+        console.log(`Parse — Found appliance: ${value}`);
+      }
+    }
+  }
+
+  if (!acceptUrl) console.log("Parse — No accept URL found in text.");
+  if (!zipCode) console.log("Parse — No zip code found in text.");
+  if (!jobAddress) console.log("Parse — No job address found in text.");
+  if (appliances.length === 0) console.log("Parse — No appliances found in text.");
+  console.log(`Parse — Summary: zip=${zipCode}, jobAddress=${jobAddress || "(none)"}, appliances=[${appliances.join(", ")}], hasAcceptUrl=${!!acceptUrl}`);
+  return { acceptUrl, zipCode, jobAddress, appliances };
 }
 
 /**

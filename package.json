@@ -11,13 +11,16 @@
     "git": "git add . && git commit -m 'add new feature' && git push -u origin main",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test:webhook": "node test-webhook.js"
+    "test:webhook": "node test-webhook.js",
+    "imaplisten": "node imaplisten/service.js"
   },
   "dependencies": {
     "axios": "^1.13.5",
     "cheerio": "^1.2.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "imapflow": "^1.2.10",
+    "mailparser": "^3.9.3",
     "mongodb": "^7.1.0"
   }
 }

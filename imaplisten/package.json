@@ -1,0 +1,20 @@
+{
+  "name": "apmen-hook-imaplisten",
+  "version": "1.0.0",
+  "description": "IMAP IDLE listener — watches inbox and forwards matched emails to a webhook",
+  "private": true,
+  "type": "module",
+  "main": "service.js",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "start": "node service.js",
+    "dev": "node --watch service.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "imapflow": "^1.2.10",
+    "mailparser": "^3.9.3"
+  }
+}
